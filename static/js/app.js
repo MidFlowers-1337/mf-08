@@ -73,6 +73,7 @@ function switchView(viewName) {
 async function renderView(viewName) {
     switch (viewName) {
         case 'dashboard': await renderDashboard(); break;
+        case 'alerts': await renderAlerts(); break;
         case 'books': await renderBooks(); break;
         case 'inventory': await renderInventory(); break;
         case 'customers': await renderCustomers(); break;
@@ -82,6 +83,9 @@ async function renderView(viewName) {
         case 'transactions': await renderTransactions(); break;
     }
 }
+
+let currentAlertTab = 'dynamic';
+let currentAlertWarehouse = '';
 
 async function renderDashboard() {
     const view = document.getElementById('view-dashboard');
@@ -1431,6 +1435,371 @@ function filterTransactions() {
             row.style.display = 'none';
         }
     });
+}
+
+function alertLevelBadge(level) {
+    const map = {
+        emergency: { cls: 'badge-emergency', text: '紧急' },
+        warning: { cls: 'badge-warning', text: '预警' },
+        attention: { cls: 'badge-attention', text: '关注' },
+        normal: { cls: 'badge-normal', text: '正常' }
+    };
+    const info = map[level] || { cls: '', text: level };
+    return `<span class="badge ${info.cls}">${info.text}</span>`;
+}
+
+async function renderAlerts() {
+    const view = document.getElementById('view-alerts');
+    const [whRes] = await Promise.all([
+        api('/api/alerts/warehouses')
+    ]);
+    const warehouses = whRes.data || [];
+
+    view.innerHTML = `
+        <div class="card">
+            <div class="card-header">
+                <h2>⚠️ 预警管理</h2>
+                <div class="toolbar" style="margin: 0;">
+                    <select class="filter-input" id="alert-warehouse-filter" onchange="filterAlertsByWarehouse()">
+                        <option value="">全部仓库</option>
+                        ${warehouses.map(w => `<option value="${w}">${w}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="tab-bar">
+                    <button class="tab-btn active" data-tab="dynamic" onclick="switchAlertTab('dynamic')">动态预警</button>
+                    <button class="tab-btn" data-tab="restock" onclick="switchAlertTab('restock')">补货建议</button>
+                    <button class="tab-btn" data-tab="history" onclick="switchAlertTab('history')">预警历史</button>
+                </div>
+                <div id="alert-tab-content"></div>
+            </div>
+        </div>
+    `;
+
+    if (currentAlertWarehouse) {
+        document.getElementById('alert-warehouse-filter').value = currentAlertWarehouse;
+    }
+
+    switchAlertTab(currentAlertTab);
+}
+
+function filterAlertsByWarehouse() {
+    currentAlertWarehouse = document.getElementById('alert-warehouse-filter').value;
+    switchAlertTab(currentAlertTab);
+}
+
+function switchAlertTab(tabName) {
+    currentAlertTab = tabName;
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    if (tabName === 'dynamic') {
+        renderDynamicAlertTab();
+    } else if (tabName === 'restock') {
+        renderRestockTab();
+    } else if (tabName === 'history') {
+        renderAlertHistoryTab();
+    }
+}
+
+async function renderDynamicAlertTab() {
+    const container = document.getElementById('alert-tab-content');
+    const url = currentAlertWarehouse
+        ? `/api/alerts/dynamic?warehouse=${encodeURIComponent(currentAlertWarehouse)}`
+        : '/api/alerts/dynamic';
+    const res = await api(url);
+    const alerts = res.data || [];
+
+    const emergency = alerts.filter(a => a.alert_level === 'emergency');
+    const warning = alerts.filter(a => a.alert_level === 'warning');
+    const attention = alerts.filter(a => a.alert_level === 'attention');
+
+    container.innerHTML = `
+        <div class="alert-stats-row">
+            <div class="alert-stat-card emergency">
+                <div class="stat-num">${emergency.length}</div>
+                <div class="stat-label">紧急</div>
+            </div>
+            <div class="alert-stat-card warning">
+                <div class="stat-num">${warning.length}</div>
+                <div class="stat-label">预警</div>
+            </div>
+            <div class="alert-stat-card attention">
+                <div class="stat-num">${attention.length}</div>
+                <div class="stat-label">关注</div>
+            </div>
+        </div>
+
+        ${alerts.length === 0 ? `
+            <div class="empty-state">
+                <div class="empty-state-icon">✅</div>
+                <div>库存健康，暂无预警</div>
+            </div>
+        ` : `
+            <table>
+                <thead>
+                    <tr>
+                        <th>级别</th>
+                        <th>ISBN</th>
+                        <th>书名</th>
+                        <th>仓库</th>
+                        <th>当前库存</th>
+                        <th>日均销量</th>
+                        <th>安全库存</th>
+                        <th>固定阈值</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${alerts.map(a => `
+                        <tr>
+                            <td>${alertLevelBadge(a.alert_level)}</td>
+                            <td>${a.isbn}</td>
+                            <td>${a.title}</td>
+                            <td>${a.warehouse}</td>
+                            <td class="transaction-out"><strong>${a.inventory} 本</strong></td>
+                            <td>${a.daily_speed.toFixed(1)} 本/天</td>
+                            <td>${a.safety_stock} 本</td>
+                            <td>${a.fixed_threshold} 本</td>
+                            <td>
+                                <button class="btn btn-small btn-primary" onclick="showAlertBookDetail(${a.book_id}, '${a.warehouse}')">详情</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `}
+    `;
+}
+
+async function renderRestockTab() {
+    const container = document.getElementById('alert-tab-content');
+    const url = currentAlertWarehouse
+        ? `/api/alerts/restock?warehouse=${encodeURIComponent(currentAlertWarehouse)}`
+        : '/api/alerts/restock';
+    const res = await api(url);
+    const suggestions = res.data || [];
+
+    const pending = suggestions.filter(s => s.status === 'pending');
+
+    container.innerHTML = `
+        <div style="margin-bottom: 15px;">
+            <span class="badge badge-emergency">待处理 ${pending.length} 条</span>
+            <span class="badge badge-normal">共 ${suggestions.length} 条</span>
+        </div>
+
+        ${suggestions.length === 0 ? `
+            <div class="empty-state">
+                <div class="empty-state-icon">📋</div>
+                <div>暂无补货建议</div>
+            </div>
+        ` : `
+            <table>
+                <thead>
+                    <tr>
+                        <th>状态</th>
+                        <th>ISBN</th>
+                        <th>书名</th>
+                        <th>仓库</th>
+                        <th>建议印量</th>
+                        <th>参考印厂</th>
+                        <th>建议下单时间</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${suggestions.map(s => `
+                        <tr>
+                            <td>${s.status === 'pending'
+                                ? '<span class="badge badge-warning">待处理</span>'
+                                : '<span class="badge badge-success">已转批次</span>'}</td>
+                            <td>${s.isbn}</td>
+                            <td>${s.title}</td>
+                            <td>${s.warehouse}</td>
+                            <td><strong>${s.suggested_quantity} 本</strong></td>
+                            <td>${s.reference_factory || '-'}</td>
+                            <td>${s.suggested_order_date_str || '-'}</td>
+                            <td>${s.created_at_str || '-'}</td>
+                            <td>
+                                ${s.status === 'pending' ? `
+                                    <button class="btn btn-small btn-success" onclick="showRestockConvertModal(${s.id}, ${s.book_id}, ${s.suggested_quantity}, '${s.reference_factory || ''}')">转印刷批次</button>
+                                ` : `
+                                    <span class="text-muted">已转批次 #${s.converted_batch_id || ''}</span>
+                                `}
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `}
+    `;
+}
+
+async function renderAlertHistoryTab() {
+    const container = document.getElementById('alert-tab-content');
+    const url = currentAlertWarehouse
+        ? `/api/alerts/history?warehouse=${encodeURIComponent(currentAlertWarehouse)}&limit=200`
+        : '/api/alerts/history?limit=200';
+    const res = await api(url);
+    const history = res.data || [];
+
+    container.innerHTML = `
+        ${history.length === 0 ? `
+            <div class="empty-state">
+                <div class="empty-state-icon">📜</div>
+                <div>暂无预警历史记录</div>
+            </div>
+        ` : `
+            <table>
+                <thead>
+                    <tr>
+                        <th>触发时间</th>
+                        <th>级别</th>
+                        <th>ISBN</th>
+                        <th>书名</th>
+                        <th>仓库</th>
+                        <th>当时库存</th>
+                        <th>当时日均</th>
+                        <th>安全库存</th>
+                        <th>固定阈值</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${history.map(h => `
+                        <tr>
+                            <td>${h.triggered_at_str || '-'}</td>
+                            <td>${alertLevelBadge(h.alert_level)}</td>
+                            <td>${h.isbn}</td>
+                            <td>${h.title}</td>
+                            <td>${h.warehouse}</td>
+                            <td>${h.inventory_qty} 本</td>
+                            <td>${h.daily_speed.toFixed(1)} 本/天</td>
+                            <td>${h.safety_stock} 本</td>
+                            <td>${h.fixed_threshold} 本</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `}
+    `;
+}
+
+function showRestockConvertModal(suggestionId, bookId, suggestedQty, factoryName) {
+    const book = booksCache.find(b => b.id === bookId);
+    const bookTitle = book ? book.title : `图书#${bookId}`;
+
+    const content = `
+        <div class="form-group">
+            <label>图书</label>
+            <input type="text" value="${bookTitle}" disabled>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>批次号</label>
+                <input type="text" id="restock-batch-no" placeholder="2025-06-001">
+            </div>
+            <div class="form-group">
+                <label>印厂名称</label>
+                <input type="text" id="restock-factory" value="${factoryName || ''}" placeholder="印厂名称">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>印刷数量</label>
+            <input type="number" id="restock-qty" value="${suggestedQty}">
+        </div>
+        <p style="font-size: 12px; color: #888; margin-top: 5px;">
+            系统建议印量 ${suggestedQty} 本，可根据实际情况调整
+        </p>
+    `;
+
+    openModal('补货建议 → 印刷批次', content, async () => {
+        const batchNo = document.getElementById('restock-batch-no').value;
+        const factory = document.getElementById('restock-factory').value;
+        const qty = parseInt(document.getElementById('restock-qty').value);
+
+        if (!batchNo) {
+            showToast('请填写批次号', 'error');
+            return;
+        }
+        if (!qty || qty <= 0) {
+            showToast('印刷数量必须大于0', 'error');
+            return;
+        }
+
+        const res = await api(`/api/alerts/restock/${suggestionId}/convert`, {
+            method: 'POST',
+            body: {
+                batch_no: batchNo,
+                factory_name: factory,
+                print_quantity: qty
+            }
+        });
+        if (res.success) {
+            showToast('已转换为印刷批次');
+            closeModal();
+            renderRestockTab();
+        } else {
+            showToast(res.message, 'error');
+        }
+    });
+}
+
+async function showAlertBookDetail(bookId, warehouse) {
+    const book = booksCache.find(b => b.id === bookId);
+    const bookTitle = book ? book.title : `图书#${bookId}`;
+    const bookIsbn = book ? book.isbn : '';
+
+    const [alertRes, restockRes] = await Promise.all([
+        api(`/api/alerts/dynamic?warehouse=${encodeURIComponent(warehouse)}`),
+        api(`/api/alerts/restock?warehouse=${encodeURIComponent(warehouse)}`)
+    ]);
+
+    const alert = (alertRes.data || []).find(a => a.book_id === bookId && a.warehouse === warehouse);
+    const restock = (restockRes.data || []).find(r => r.book_id === bookId && r.warehouse === warehouse && r.status === 'pending');
+
+    const daysLeft = alert && alert.daily_speed > 0
+        ? Math.floor(alert.inventory / alert.daily_speed)
+        : '∞';
+
+    const content = `
+        <div class="detail-section">
+            <h4>基本信息</h4>
+            <div class="detail-row"><span class="label">ISBN</span><span class="value">${bookIsbn}</span></div>
+            <div class="detail-row"><span class="label">书名</span><span class="value">${bookTitle}</span></div>
+            <div class="detail-row"><span class="label">仓库</span><span class="value">${warehouse}</span></div>
+            ${alert ? `
+                <div class="detail-row"><span class="label">预警级别</span><span class="value">${alertLevelBadge(alert.alert_level)}</span></div>
+            ` : ''}
+        </div>
+        <div class="detail-section">
+            <h4>库存与速度</h4>
+            ${alert ? `
+                <div class="detail-row"><span class="label">当前库存</span><span class="value"><strong>${alert.inventory} 本</strong></span></div>
+                <div class="detail-row"><span class="label">近30天日均出库</span><span class="value">${alert.daily_speed.toFixed(2)} 本/天</span></div>
+                <div class="detail-row"><span class="label">预计可售天数</span><span class="value">${daysLeft} 天</span></div>
+                <div class="detail-row"><span class="label">安全库存</span><span class="value">${alert.safety_stock} 本</span></div>
+                <div class="detail-row"><span class="label">安全库存×1.2</span><span class="value">${Math.ceil(alert.safety_stock * 1.2)} 本</span></div>
+                <div class="detail-row"><span class="label">固定阈值（兜底）</span><span class="value">${alert.fixed_threshold} 本</span></div>
+            ` : `
+                <div class="empty-state"><div class="empty-state-icon">📊</div><div>暂无预警数据</div></div>
+            `}
+        </div>
+        ${restock ? `
+            <div class="detail-section">
+                <h4>补货建议</h4>
+                <div class="detail-row"><span class="label">建议印量</span><span class="value"><strong>${restock.suggested_quantity} 本</strong></span></div>
+                <div class="detail-row"><span class="label">参考印厂</span><span class="value">${restock.reference_factory || '-'}</span></div>
+                <div class="detail-row"><span class="label">建议下单时间</span><span class="value">${restock.suggested_order_date_str || '-'}</span></div>
+                <div style="margin-top: 10px;">
+                    <button class="btn btn-primary" onclick="closeModal(); showRestockConvertModal(${restock.id}, ${restock.book_id}, ${restock.suggested_quantity}, '${restock.reference_factory || ''}')">一键转印刷批次</button>
+                </div>
+            </div>
+        ` : ''}
+    `;
+
+    openModal(`预警详情 - ${bookTitle}`, content);
 }
 
 document.addEventListener('DOMContentLoaded', () => {

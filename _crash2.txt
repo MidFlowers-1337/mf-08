@@ -1,0 +1,18 @@
+book_id=1
+批次A=80 B=50 收货完成
+拣货100: HTTP 200 | 拣货完成
+发货: HTTP 200 | 发货完成
+签收: HTTP 200 | 已确认签收
+order=1 order_item=1 跨批次拣货A80+B20
+return=1 return_item=1 expected=37
+验收好30坏7: HTTP 200 | 验收完成
+
+==================== ★点退款按钮★ ====================
+入库: HTTP 200 | 好货已入库，坏货已拒收
+>>> 退款按钮: HTTP 200 | 退款完成，金额 1799.70 元
+
+==== 退款后 renderReturns() 刷新列表字段检查 ====
+  id=1 status=refunded refund_fen=179970 missing=[]
+
+==== 边界：对非accepted状态点退款 ====
+未验收直接退款: HTTP 400 | 退货单状态 registered 不允许退款，需先完成入库

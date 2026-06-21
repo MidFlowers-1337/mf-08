@@ -15,7 +15,8 @@ from services import (
     FifoPicker,
     ReturnService,
     ReturnInspectionResult,
-    ReconciliationService
+    ReconciliationService,
+    AlertService
 )
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
@@ -272,9 +273,24 @@ async def api_order_ship(request):
 
     with get_db() as conn:
         success, msg = OrderService.ship_order(conn, order_id, tracking_no, logistics_company)
-        if success:
-            return JSONResponse({'success': True, 'message': msg})
-        return JSONResponse({'success': False, 'message': msg}, status_code=400)
+        if not success:
+            return JSONResponse({'success': False, 'message': msg}, status_code=400)
+
+        order = OrderService.get_order_detail(conn, order_id)
+        shipped_books = {}
+        for item in order.get('items', []):
+            book_id = item['book_id']
+            qty = item['quantity']
+            if book_id in shipped_books:
+                shipped_books[book_id] += qty
+            else:
+                shipped_books[book_id] = qty
+
+        for book_id in shipped_books:
+            AlertService.update_speed_cache(conn, book_id, '主库')
+            AlertService.log_alert_if_changed(conn, book_id, '主库')
+
+        return JSONResponse({'success': True, 'message': msg})
 
 
 async def api_order_deliver(request):
@@ -334,6 +350,68 @@ async def api_inventory_alerts(request):
             if success:
                 return JSONResponse({'success': True, 'message': msg})
             return JSONResponse({'success': False, 'message': msg}, status_code=400)
+
+
+async def api_dynamic_alerts(request):
+    warehouse = request.query_params.get('warehouse')
+    with get_db() as conn:
+        alerts = AlertService.get_dynamic_alerts(conn, warehouse)
+        return JSONResponse({'success': True, 'data': alerts})
+
+
+async def api_restock_suggestions(request):
+    method = request.method
+    if method == 'GET':
+        status = request.query_params.get('status')
+        warehouse = request.query_params.get('warehouse')
+        with get_db() as conn:
+            suggestions = AlertService.get_restock_suggestions(conn, status, warehouse)
+            for s in suggestions:
+                if s.get('created_at'):
+                    s['created_at_str'] = format_timestamp(s['created_at'])
+                if s.get('suggested_order_date'):
+                    s['suggested_order_date_str'] = format_timestamp(s['suggested_order_date'])
+            return JSONResponse({'success': True, 'data': suggestions})
+
+
+async def api_restock_convert(request):
+    suggestion_id = int(request.path_params['suggestion_id'])
+    data = await request.json()
+    batch_no = data.get('batch_no', '')
+    factory_name = data.get('factory_name')
+    print_quantity = data.get('print_quantity')
+
+    if not batch_no:
+        return JSONResponse({'success': False, 'message': '请填写批次号'}, status_code=400)
+
+    with get_db() as conn:
+        success, msg, batch_id = AlertService.convert_restock_to_batch(
+            conn, suggestion_id, batch_no, factory_name, print_quantity
+        )
+        if success:
+            return JSONResponse({'success': True, 'message': msg, 'data': {'batch_id': batch_id}})
+        return JSONResponse({'success': False, 'message': msg}, status_code=400)
+
+
+async def api_alert_history(request):
+    book_id = request.query_params.get('book_id')
+    book_id_int = int(book_id) if book_id else None
+    warehouse = request.query_params.get('warehouse')
+    limit = request.query_params.get('limit', '100')
+    limit_int = int(limit)
+
+    with get_db() as conn:
+        history = AlertService.get_alert_history(conn, book_id_int, warehouse, limit_int)
+        for h in history:
+            if h.get('triggered_at'):
+                h['triggered_at_str'] = format_timestamp(h['triggered_at'])
+        return JSONResponse({'success': True, 'data': history})
+
+
+async def api_alert_warehouses(request):
+    with get_db() as conn:
+        warehouses = AlertService.get_warehouse_list(conn)
+        return JSONResponse({'success': True, 'data': warehouses})
 
 
 async def api_returns(request):
@@ -524,6 +602,11 @@ app = Starlette(debug=True, routes=[
     Route('/api/orders/{order_id:int}/cancel_pick', endpoint=api_order_cancel_pick, methods=['POST']),
     Route('/api/inventory', endpoint=api_inventory),
     Route('/api/inventory/alerts', endpoint=api_inventory_alerts, methods=['GET', 'POST']),
+    Route('/api/alerts/dynamic', endpoint=api_dynamic_alerts),
+    Route('/api/alerts/restock', endpoint=api_restock_suggestions, methods=['GET']),
+    Route('/api/alerts/restock/{suggestion_id:int}/convert', endpoint=api_restock_convert, methods=['POST']),
+    Route('/api/alerts/history', endpoint=api_alert_history),
+    Route('/api/alerts/warehouses', endpoint=api_alert_warehouses),
     Route('/api/returns', endpoint=api_returns, methods=['GET', 'POST']),
     Route('/api/returns/{return_id:int}', endpoint=api_return_detail),
     Route('/api/returns/{return_id:int}/inspect', endpoint=api_return_inspect, methods=['POST']),

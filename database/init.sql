@@ -209,6 +209,47 @@ CREATE TABLE IF NOT EXISTS reconciliation_details (
     FOREIGN KEY (book_id) REFERENCES books(id)
 );
 
+-- 出库速度缓存表（按图书+仓库维度，避免每次全量重算）
+CREATE TABLE IF NOT EXISTS alert_speed_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    warehouse TEXT NOT NULL DEFAULT '主库',
+    daily_speed REAL NOT NULL DEFAULT 0,
+    last_tx_id INTEGER,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    FOREIGN KEY (book_id) REFERENCES books(id),
+    UNIQUE(book_id, warehouse)
+);
+
+-- 预警历史表（记录每次预警状态变化）
+CREATE TABLE IF NOT EXISTS alert_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    warehouse TEXT NOT NULL DEFAULT '主库',
+    inventory_qty INTEGER NOT NULL,
+    daily_speed REAL NOT NULL,
+    alert_level TEXT NOT NULL,
+    safety_stock INTEGER NOT NULL,
+    fixed_threshold INTEGER NOT NULL,
+    triggered_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    FOREIGN KEY (book_id) REFERENCES books(id)
+);
+
+-- 补货建议表（紧急档自动生成）
+CREATE TABLE IF NOT EXISTS restock_suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    warehouse TEXT NOT NULL DEFAULT '主库',
+    suggested_quantity INTEGER NOT NULL,
+    reference_factory TEXT,
+    suggested_order_date INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    converted_batch_id INTEGER,
+    FOREIGN KEY (book_id) REFERENCES books(id),
+    FOREIGN KEY (converted_batch_id) REFERENCES print_batches(id)
+);
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_print_batches_book_id ON print_batches(book_id);
 CREATE INDEX IF NOT EXISTS idx_print_batches_received_at ON print_batches(received_at);
@@ -223,3 +264,9 @@ CREATE INDEX IF NOT EXISTS idx_inventory_transactions_type ON inventory_transact
 CREATE INDEX IF NOT EXISTS idx_inventory_transactions_created_at ON inventory_transactions(created_at);
 CREATE INDEX IF NOT EXISTS idx_returns_order_id ON returns(order_id);
 CREATE INDEX IF NOT EXISTS idx_returns_status ON returns(status);
+CREATE INDEX IF NOT EXISTS idx_alert_speed_cache_book ON alert_speed_cache(book_id);
+CREATE INDEX IF NOT EXISTS idx_alert_history_book ON alert_history(book_id);
+CREATE INDEX IF NOT EXISTS idx_alert_history_level ON alert_history(alert_level);
+CREATE INDEX IF NOT EXISTS idx_alert_history_triggered ON alert_history(triggered_at);
+CREATE INDEX IF NOT EXISTS idx_restock_suggestions_book ON restock_suggestions(book_id);
+CREATE INDEX IF NOT EXISTS idx_restock_suggestions_status ON restock_suggestions(status);
