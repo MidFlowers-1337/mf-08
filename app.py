@@ -156,6 +156,7 @@ async def api_batch_receive(request):
     with get_db() as conn:
         success, msg = InventoryService.receive_factory_goods(conn, batch_id, received_qty, warehouse)
         if success:
+            AlertService.after_factory_received(conn, batch_id)
             return JSONResponse({'success': True, 'message': msg})
         return JSONResponse({'success': False, 'message': msg}, status_code=400)
 
@@ -275,21 +276,6 @@ async def api_order_ship(request):
         success, msg = OrderService.ship_order(conn, order_id, tracking_no, logistics_company)
         if not success:
             return JSONResponse({'success': False, 'message': msg}, status_code=400)
-
-        order = OrderService.get_order_detail(conn, order_id)
-        shipped_books = {}
-        for item in order.get('items', []):
-            book_id = item['book_id']
-            qty = item['quantity']
-            if book_id in shipped_books:
-                shipped_books[book_id] += qty
-            else:
-                shipped_books[book_id] = qty
-
-        for book_id in shipped_books:
-            AlertService.update_speed_cache(conn, book_id, '主库')
-            AlertService.log_alert_if_changed(conn, book_id, '主库')
-
         return JSONResponse({'success': True, 'message': msg})
 
 
@@ -380,32 +366,64 @@ async def api_restock_convert(request):
     batch_no = data.get('batch_no', '')
     factory_name = data.get('factory_name')
     print_quantity = data.get('print_quantity')
+    auto_receive = data.get('auto_receive', True)
 
     if not batch_no:
         return JSONResponse({'success': False, 'message': '请填写批次号'}, status_code=400)
 
     with get_db() as conn:
-        success, msg, batch_id = AlertService.convert_restock_to_batch(
-            conn, suggestion_id, batch_no, factory_name, print_quantity
+        success, msg, result = AlertService.convert_restock_to_batch(
+            conn, suggestion_id, batch_no, factory_name, print_quantity, auto_receive
         )
         if success:
-            return JSONResponse({'success': True, 'message': msg, 'data': {'batch_id': batch_id}})
-        return JSONResponse({'success': False, 'message': msg}, status_code=400)
+            return JSONResponse({'success': True, 'message': msg, 'data': result})
+        return JSONResponse({'success': False, 'message': msg, 'data': result}, status_code=400)
 
 
 async def api_alert_history(request):
     book_id = request.query_params.get('book_id')
     book_id_int = int(book_id) if book_id else None
     warehouse = request.query_params.get('warehouse')
-    limit = request.query_params.get('limit', '100')
-    limit_int = int(limit)
+    page = int(request.query_params.get('page', '1'))
+    page_size = int(request.query_params.get('page_size', '50'))
 
     with get_db() as conn:
-        history = AlertService.get_alert_history(conn, book_id_int, warehouse, limit_int)
+        history, total = AlertService._get_alert_history_paged(
+            conn, book_id_int, warehouse, page, page_size
+        )
         for h in history:
             if h.get('triggered_at'):
                 h['triggered_at_str'] = format_timestamp(h['triggered_at'])
-        return JSONResponse({'success': True, 'data': history})
+        pages = (total + page_size - 1) // page_size if page_size > 0 else 1
+        return JSONResponse({
+            'success': True,
+            'data': history,
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'pages': pages
+        })
+
+
+async def api_alert_config(request):
+    method = request.method
+    with get_db() as conn:
+        if method == 'GET':
+            configs = AlertService.get_all_configs(conn)
+            return JSONResponse({'success': True, 'data': configs})
+        elif method == 'POST':
+            data = await request.json()
+            key = data.get('config_key')
+            value = data.get('config_value')
+            if not key or value is None:
+                return JSONResponse(
+                    {'success': False, 'message': '缺少 config_key 或 config_value'},
+                    status_code=400
+                )
+            success, msg = AlertService.set_config(conn, key, str(value))
+            if success:
+                return JSONResponse({'success': True, 'message': msg})
+            return JSONResponse({'success': False, 'message': msg}, status_code=400)
 
 
 async def api_alert_warehouses(request):
@@ -606,6 +624,7 @@ app = Starlette(debug=True, routes=[
     Route('/api/alerts/restock', endpoint=api_restock_suggestions, methods=['GET']),
     Route('/api/alerts/restock/{suggestion_id:int}/convert', endpoint=api_restock_convert, methods=['POST']),
     Route('/api/alerts/history', endpoint=api_alert_history),
+    Route('/api/alerts/config', endpoint=api_alert_config, methods=['GET', 'POST']),
     Route('/api/alerts/warehouses', endpoint=api_alert_warehouses),
     Route('/api/returns', endpoint=api_returns, methods=['GET', 'POST']),
     Route('/api/returns/{return_id:int}', endpoint=api_return_detail),

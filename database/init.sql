@@ -270,3 +270,37 @@ CREATE INDEX IF NOT EXISTS idx_alert_history_level ON alert_history(alert_level)
 CREATE INDEX IF NOT EXISTS idx_alert_history_triggered ON alert_history(triggered_at);
 CREATE INDEX IF NOT EXISTS idx_restock_suggestions_book ON restock_suggestions(book_id);
 CREATE INDEX IF NOT EXISTS idx_restock_suggestions_status ON restock_suggestions(status);
+
+-- 动态预警系统配置表
+CREATE TABLE IF NOT EXISTS system_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_key TEXT NOT NULL UNIQUE,
+    config_value TEXT NOT NULL,
+    description TEXT,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+INSERT OR IGNORE INTO system_configs (config_key, config_value, description) VALUES
+('lead_time_days',       '14',   '补货提前期（天）'),
+('buffer_ratio',         '0.2',  '安全库存缓冲比例（小数，例如 0.2 = 20%）'),
+('warning_multiplier',   '1.2',  '预警档门槛倍数：库存 < 安全库存 × 该值 触发预警'),
+('restock_min_qty',      '50',   '补货建议最小印量（本）'),
+('restock_speed_days',   '30',   '补货建议量参考日数：建议量 = MAX(安全库存×2, 日均速度×该值)'),
+('new_book_protect_days','14',   '新书上架保护期（天），在此期间按历史最少天数反推速度'),
+('new_book_min_speed',   '3',    '新书最低日均速度保护（本/天），避免刚上架漏报'),
+('alert_history_cooldown','12',   '同级别预警历史冷却时间（小时），防止库存小幅抖动频繁刷历史'),
+('stockout_max_days',    '60',   '速度为零的书按该天数反推"虚拟"最低速度，防止安全库存为 0');
+
+-- 扩展 alert_speed_cache：加窗口累计量和窗口起始 tx_id，用于真增量更新
+-- （如果列已存在则跳过）
+ALTER TABLE alert_speed_cache ADD COLUMN window_total INTEGER DEFAULT 0;
+ALTER TABLE alert_speed_cache ADD COLUMN window_start_tx_id INTEGER;
+ALTER TABLE alert_speed_cache ADD COLUMN window_days INTEGER DEFAULT 30;
+ALTER TABLE alert_speed_cache ADD COLUMN book_created_at INTEGER;
+
+-- 扩展 alert_history：加 note 列，记录触发原因（级别变化 / 断货心跳 / 冷却刷新 / 入库强制）
+-- （如果列已存在则跳过）
+ALTER TABLE alert_history ADD COLUMN note TEXT;
+
+-- 扩展 restock_suggestions：加 updated_at 列，记录状态变更时间
+ALTER TABLE restock_suggestions ADD COLUMN updated_at INTEGER;

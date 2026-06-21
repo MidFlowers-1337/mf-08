@@ -234,11 +234,12 @@ class ReturnService:
 
         for item in return_items:
             cursor.execute("""
-                SELECT pli.batch_id, SUM(pli.quantity) as total_picked
+                SELECT pli.batch_id, bi.warehouse, SUM(pli.quantity) as total_picked
                 FROM pick_lists pl
                 JOIN pick_list_items pli ON pl.id = pli.pick_list_id
+                JOIN batch_inventory bi ON pli.batch_id = bi.batch_id
                 WHERE pl.order_id = ? AND pli.order_item_id = ?
-                GROUP BY pli.batch_id
+                GROUP BY pli.batch_id, bi.warehouse
                 ORDER BY pli.id ASC
             """, (return_data['order_id'], item['order_item_id']))
             batch_picks = [dict(row) for row in cursor.fetchall()]
@@ -251,6 +252,7 @@ class ReturnService:
                     break
 
                 batch_id = bp['batch_id']
+                tx_warehouse = bp['warehouse'] or '主库'
                 max_from_batch = bp['total_picked']
 
                 if remaining_good > 0:
@@ -259,8 +261,8 @@ class ReturnService:
                         cursor.execute("""
                             UPDATE batch_inventory
                             SET quantity = quantity + ?, updated_at = strftime('%s','now')
-                            WHERE batch_id = ? AND warehouse = '主库'
-                        """, (qty_to_return, batch_id))
+                            WHERE batch_id = ? AND warehouse = ?
+                        """, (qty_to_return, batch_id, tx_warehouse))
 
                         unit_price = item['unit_price_fen']
                         total_amt = qty_to_return * unit_price
@@ -270,8 +272,8 @@ class ReturnService:
                                 transaction_type, book_id, batch_id, quantity,
                                 reference_type, reference_id, warehouse,
                                 unit_price_fen, total_amount_fen, note
-                            ) VALUES ('return_in', ?, ?, ?, 'return', ?, '主库', ?, ?, '退货入库')
-                        """, (item['book_id'], batch_id, qty_to_return, return_id, unit_price, total_amt))
+                            ) VALUES ('return_in', ?, ?, ?, 'return', ?, ?, ?, ?, '退货入库')
+                        """, (item['book_id'], batch_id, qty_to_return, return_id, tx_warehouse, unit_price, total_amt))
 
                         remaining_good -= qty_to_return
 
@@ -286,14 +288,17 @@ class ReturnService:
                                 transaction_type, book_id, batch_id, quantity,
                                 reference_type, reference_id, warehouse,
                                 unit_price_fen, total_amount_fen, note
-                            ) VALUES ('return_reject', ?, ?, -?, 'return', ?, '主库', ?, -?, '退货损坏拒收')
-                        """, (item['book_id'], batch_id, qty_to_reject, return_id, unit_price, total_amt))
+                            ) VALUES ('return_reject', ?, ?, -?, 'return', ?, ?, ?, -?, '退货损坏拒收')
+                        """, (item['book_id'], batch_id, qty_to_reject, return_id, tx_warehouse, unit_price, total_amt))
 
                         remaining_damaged -= qty_to_reject
 
         cursor.execute("""
             UPDATE returns SET status = 'accepted' WHERE id = ?
         """, (return_id,))
+
+        from services.alert_service import AlertService
+        AlertService.after_return_received(conn, return_id)
 
         return True, "好货已入库，坏货已拒收"
 

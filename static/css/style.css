@@ -728,3 +728,92 @@ tbody tr:hover {
     text-align: right;
     word-break: break-all;
 }
+
+.stockout-row {
+    background: #fff1f0 !important;
+}
+.stockout-row td {
+    border-top: 1px solid #ffa39e;
+    border-bottom: 1px solid #ffa39e;
+}
+.stockout-row td:first-child {
+    border-left: 3px solid #cf1322;
+}
+
+.pagination-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 4px;
+    margin-top: 12px;
+    border-top: 1px solid #f0f0f0;
+    font-size: 13px;
+    color: #666;
+}
+
+.pagination-btn {
+    padding: 6px 14px;
+    border: 1px solid #d9d9d9;
+    background: white;
+    color: #333;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 13px;
+    transition: all 0.2s;
+}
+.pagination-btn:hover:not(:disabled) {
+    border-color: #667eea;
+    color: #667eea;
+}
+.pagination-btn:disabled {
+    color: #ccc;
+    cursor: not-allowed;
+    background: #f5f5f5;
+}
+
+.pagination-info {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.config-table td input {
+    width: 110px;
+    padding: 4px 8px;
+    border: 1px solid #d9d9d9;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+}
+.config-table td input:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+.config-desc {
+    font-size: 12px;
+    color: #999;
+    max-width: 320px;
+    line-height: 1.5;
+}
+
+.config-key {
+    font-family: Consolas, Monaco, monospace;
+    font-size: 12px;
+    color: #667eea;
+    background: #f9f0ff;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+
+.history-note {
+    font-size: 11px;
+    color: #999;
+    margin-top: 2px;
+}
+.history-note.stockout { color: #cf1322; }
+.history-note.refresh { color: #d46b08; }
+
+.text-danger { color: #cf1322; font-weight: 600; }
+.text-success { color: #389e0d; }
+.text-warning { color: #d46b08; }

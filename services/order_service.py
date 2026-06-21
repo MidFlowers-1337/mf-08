@@ -171,6 +171,12 @@ class OrderService:
             """, (shipment_id, pi['id'], pi['quantity']))
 
             cursor.execute("""
+                SELECT warehouse FROM batch_inventory WHERE batch_id = ? LIMIT 1
+            """, (pi['batch_id'],))
+            wh_row = cursor.fetchone()
+            tx_warehouse = wh_row['warehouse'] if wh_row else '主库'
+
+            cursor.execute("""
                 SELECT oi.unit_price_fen FROM order_items oi WHERE oi.id = ?
             """, (pi['order_item_id'],))
             price_row = cursor.fetchone()
@@ -188,14 +194,17 @@ class OrderService:
                     transaction_type, book_id, batch_id, quantity,
                     reference_type, reference_id, warehouse,
                     unit_price_fen, total_amount_fen, note
-                ) VALUES ('shipment_out', ?, ?, -?, 'shipment', ?, '主库', ?, -?, '订单发货')
-            """, (book_id, pi['batch_id'], pi['quantity'], shipment_id, unit_price, total_amt))
+                ) VALUES ('shipment_out', ?, ?, -?, 'shipment', ?, ?, ?, -?, '订单发货')
+            """, (book_id, pi['batch_id'], pi['quantity'], shipment_id, tx_warehouse, unit_price, total_amt))
 
         cursor.execute("""
             UPDATE orders 
             SET status = 'shipped', updated_at = strftime('%s','now')
             WHERE id = ?
         """, (order_id,))
+
+        from services.alert_service import AlertService
+        AlertService.after_shipment_created(conn, shipment_id)
 
         return True, "发货完成"
 
