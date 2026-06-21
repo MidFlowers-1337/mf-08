@@ -255,3 +255,58 @@ class FifoPicker:
                 ORDER BY b.id, pb.received_at ASC
             """)
         return [dict(row) for row in cursor.fetchall()]
+
+    @staticmethod
+    def cancel_pick_order(conn, order_id: int) -> Tuple[bool, str]:
+        """
+        取消已拣货的订单，将库存回滚到原批次
+        1. 查询拣货单及明细
+        2. 数量加回对应批次库存
+        3. 删除拣货明细和拣货单
+        4. 订单状态回滚为 pending
+        """
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, status FROM orders WHERE id = ?", (order_id,))
+        order_row = cursor.fetchone()
+        if not order_row:
+            return False, "订单不存在"
+
+        if order_row['status'] != 'picked':
+            return False, f"订单状态 {order_row['status']} 不允许取消拣货，仅已拣货状态可取消"
+
+        cursor.execute("SELECT id FROM pick_lists WHERE order_id = ?", (order_id,))
+        pick_list = cursor.fetchone()
+        if not pick_list:
+            return False, "找不到拣货单"
+
+        pick_list_id = pick_list['id']
+
+        cursor.execute("""
+            SELECT pli.batch_id, pli.quantity, bi.warehouse
+            FROM pick_list_items pli
+            JOIN batch_inventory bi ON pli.batch_id = bi.batch_id
+            WHERE pli.pick_list_id = ?
+        """, (pick_list_id,))
+        pick_items = [dict(row) for row in cursor.fetchall()]
+
+        if not pick_items:
+            return False, "拣货单没有明细"
+
+        for pi in pick_items:
+            cursor.execute("""
+                UPDATE batch_inventory
+                SET quantity = quantity + ?, updated_at = strftime('%s','now')
+                WHERE batch_id = ? AND warehouse = ?
+            """, (pi['quantity'], pi['batch_id'], pi['warehouse']))
+
+        cursor.execute("DELETE FROM pick_list_items WHERE pick_list_id = ?", (pick_list_id,))
+        cursor.execute("DELETE FROM pick_lists WHERE id = ?", (pick_list_id,))
+
+        cursor.execute("""
+            UPDATE orders SET status = 'pending', updated_at = strftime('%s','now')
+            WHERE id = ?
+        """, (order_id,))
+
+        return True, "已取消拣货，库存已恢复"
+

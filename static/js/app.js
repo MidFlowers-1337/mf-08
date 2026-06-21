@@ -301,7 +301,7 @@ function showAddBookModal() {
             isbn: document.getElementById('book-isbn').value,
             title: document.getElementById('book-title').value,
             author: document.getElementById('book-author').value,
-            price_yuan: parseFloat(document.getElementById('book-price').value),
+            price_yuan: document.getElementById('book-price').value,
             edition: document.getElementById('book-edition').value
         };
         const res = await api('/api/books', { method: 'POST', body: data });
@@ -657,9 +657,14 @@ async function renderOrders(status = null) {
                                     ` : ''}
                                     ${o.status === 'picked' ? `
                                         <button class="btn btn-small btn-success" onclick="showShipModal(${o.id})">发货</button>
+                                        <button class="btn btn-small btn-secondary" onclick="cancelPickOrder(${o.id})">取消拣货</button>
+                                        <button class="btn btn-small btn-danger" onclick="cancelOrder(${o.id})">取消订单</button>
                                     ` : ''}
                                     ${o.status === 'shipped' ? `
                                         <button class="btn btn-small btn-success" onclick="deliverOrder(${o.id})">签收</button>
+                                        <button class="btn btn-small btn-warning" onclick="returnOrder(${o.id})">退货</button>
+                                    ` : ''}
+                                    ${o.status === 'delivered' ? `
                                         <button class="btn btn-small btn-warning" onclick="returnOrder(${o.id})">退货</button>
                                     ` : ''}
                                 </td>
@@ -803,7 +808,7 @@ async function showOrderDetail(orderId) {
                             <td>${item.isbn}</td>
                             <td>¥${formatMoney(item.unit_price_fen)}</td>
                             <td>${item.quantity}</td>
-                            <td>¥${formatMoney(item.total_price_yuan * 100)}</td>
+                            <td>¥${formatMoney(item.quantity * item.unit_price_fen)}</td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -862,7 +867,7 @@ async function deliverOrder(orderId) {
 }
 
 async function cancelOrder(orderId) {
-    if (!confirm('确定要取消这个订单吗？')) return;
+    if (!confirm('确定要取消这个订单吗？已拣货的库存将自动恢复。')) return;
     const res = await api(`/api/orders/${orderId}/cancel`, { method: 'POST' });
     if (res.success) {
         showToast('订单已取消');
@@ -872,16 +877,78 @@ async function cancelOrder(orderId) {
     }
 }
 
+async function cancelPickOrder(orderId) {
+    if (!confirm('确定要取消拣货吗？库存将恢复到原批次。')) return;
+    const res = await api(`/api/orders/${orderId}/cancel_pick`, { method: 'POST' });
+    if (res.success) {
+        showToast('已取消拣货，库存已恢复');
+        renderOrders();
+    } else {
+        showToast(res.message, 'error');
+    }
+}
+
 async function returnOrder(orderId) {
+    const orderRes = await api(`/api/orders/${orderId}`);
+    if (!orderRes.success) {
+        showToast(orderRes.message, 'error');
+        return;
+    }
+    const order = orderRes.data;
+    const itemsHtml = order.items.map((item, idx) => `
+        <div class="return-item-row" data-item-id="${item.id}" data-max="${item.quantity}">
+            <div style="flex: 2; padding-right: 10px;">
+                ${item.title} (${item.isbn})
+            </div>
+            <div style="width: 80px;">
+                <input type="number" class="return-qty" value="${item.quantity}" min="0" max="${item.quantity}" 
+                       style="width: 100%;" data-price="${item.unit_price_fen}" data-idx="${idx}">
+            </div>
+            <div style="width: 80px; text-align: right; padding-left: 10px;">
+                <span class="return-item-total" data-idx="${idx}">¥${formatMoney(item.quantity * item.unit_price_fen)}</span>
+            </div>
+        </div>
+    `).join('');
+
     const content = `
         <div class="form-group">
             <label>退货原因</label>
             <textarea id="return-reason" rows="2" placeholder="请输入退货原因"></textarea>
         </div>
+        <div class="form-group">
+            <label>退货商品（可修改数量，部分退货）</label>
+            <div style="font-size: 12px; color: #666; margin-bottom: 8px;">
+                订单号：${order.order_no}，修改数量实现部分退货
+            </div>
+            <div id="return-items-list" style="border: 1px solid #eee; border-radius: 4px; padding: 10px;">
+                ${itemsHtml}
+            </div>
+            <div style="margin-top: 10px; text-align: right; font-weight: bold;">
+                预计退款：<span id="return-total">¥${formatMoney(order.total_amount_fen)}</span>
+            </div>
+        </div>
     `;
-    openModal('登记退货', content, async () => {
+    openModal('登记退货（支持部分退）', content, async () => {
         const reason = document.getElementById('return-reason').value;
-        const res = await api('/api/returns', { method: 'POST', body: { order_id: orderId, reason } });
+        const itemRows = document.querySelectorAll('#return-items-list .return-item-row');
+        const items = [];
+        itemRows.forEach(row => {
+            const qtyInput = row.querySelector('.return-qty');
+            const qty = parseInt(qtyInput.value) || 0;
+            if (qty > 0) {
+                items.push({
+                    order_item_id: parseInt(row.dataset.itemId),
+                    quantity: qty
+                });
+            }
+        });
+
+        if (items.length === 0) {
+            showToast('请至少选择一件退货商品', 'error');
+            return;
+        }
+
+        const res = await api('/api/returns', { method: 'POST', body: { order_id: orderId, reason, items } });
         if (res.success) {
             showToast('退货登记成功');
             closeModal();
@@ -891,6 +958,26 @@ async function returnOrder(orderId) {
             showToast(res.message, 'error');
         }
     });
+
+    setTimeout(() => {
+        document.querySelectorAll('#return-items-list .return-qty').forEach(input => {
+            input.addEventListener('input', updateReturnTotal);
+        });
+    }, 100);
+}
+
+function updateReturnTotal() {
+    let totalFen = 0;
+    document.querySelectorAll('#return-items-list .return-qty').forEach(input => {
+        const qty = parseInt(input.value) || 0;
+        const price = parseInt(input.dataset.price) || 0;
+        const idx = input.dataset.idx;
+        const totalEl = document.querySelector(`.return-item-total[data-idx="${idx}"]`);
+        if (totalEl) totalEl.textContent = `¥${formatMoney(qty * price)}`;
+        totalFen += qty * price;
+    });
+    const totalEl = document.getElementById('return-total');
+    if (totalEl) totalEl.textContent = `¥${formatMoney(totalFen)}`;
 }
 
 async function renderReturns(status = null) {

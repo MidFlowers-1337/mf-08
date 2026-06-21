@@ -3,6 +3,7 @@ from starlette.responses import JSONResponse, HTMLResponse, FileResponse
 from starlette.routing import Route, Mount
 from starlette.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
+from decimal import Decimal, ROUND_HALF_UP
 import json
 import os
 import time
@@ -22,6 +23,13 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
 
 def fen_to_yuan(fen: int) -> float:
     return fen / 100 if fen else 0
+
+
+def yuan_to_fen(yuan) -> int:
+    if yuan is None:
+        return 0
+    d = Decimal(str(yuan)) * Decimal('100')
+    return int(d.quantize(Decimal('1'), rounding=ROUND_HALF_UP))
 
 
 def format_timestamp(ts: int) -> str:
@@ -87,7 +95,7 @@ async def api_books(request):
             if f not in data:
                 return JSONResponse({'success': False, 'message': f'缺少字段: {f}'}, status_code=400)
 
-        price_fen = int(float(data['price_yuan']) * 100)
+        price_fen = yuan_to_fen(data['price_yuan'])
 
         with get_db() as conn:
             success, msg, book_id = InventoryService.add_book(
@@ -287,6 +295,15 @@ async def api_order_cancel(request):
         return JSONResponse({'success': False, 'message': msg}, status_code=400)
 
 
+async def api_order_cancel_pick(request):
+    order_id = int(request.path_params['order_id'])
+    with get_db() as conn:
+        success, msg = FifoPicker.cancel_pick_order(conn, order_id)
+        if success:
+            return JSONResponse({'success': True, 'message': msg})
+        return JSONResponse({'success': False, 'message': msg}, status_code=400)
+
+
 async def api_inventory(request):
     book_id = request.query_params.get('book_id')
     book_id_int = int(book_id) if book_id else None
@@ -340,11 +357,12 @@ async def api_returns(request):
         data = await request.json()
         order_id = data.get('order_id')
         reason = data.get('reason', '')
+        items = data.get('items')
         if not order_id:
             return JSONResponse({'success': False, 'message': '缺少 order_id'}, status_code=400)
 
         with get_db() as conn:
-            success, msg, ret_data = ReturnService.register_return(conn, order_id, reason)
+            success, msg, ret_data = ReturnService.register_return(conn, order_id, reason, items)
             if success:
                 return JSONResponse({'success': True, 'message': msg, 'data': ret_data})
             return JSONResponse({'success': False, 'message': msg}, status_code=400)
@@ -503,6 +521,7 @@ app = Starlette(debug=True, routes=[
     Route('/api/orders/{order_id:int}/ship', endpoint=api_order_ship, methods=['POST']),
     Route('/api/orders/{order_id:int}/deliver', endpoint=api_order_deliver, methods=['POST']),
     Route('/api/orders/{order_id:int}/cancel', endpoint=api_order_cancel, methods=['POST']),
+    Route('/api/orders/{order_id:int}/cancel_pick', endpoint=api_order_cancel_pick, methods=['POST']),
     Route('/api/inventory', endpoint=api_inventory),
     Route('/api/inventory/alerts', endpoint=api_inventory_alerts, methods=['GET', 'POST']),
     Route('/api/returns', endpoint=api_returns, methods=['GET', 'POST']),

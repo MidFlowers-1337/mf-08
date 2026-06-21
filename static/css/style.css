@@ -575,6 +575,23 @@ tbody tr:hover {
     width: 100px;
 }
 
+.return-item-row {
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.return-item-row:last-child {
+    border-bottom: none;
+}
+
+.return-item-row .return-qty {
+    padding: 6px;
+    border: 1px solid #d9d9d9;
+    border-radius: 4px;
+}
+
 .batch-tag {
     display: inline-block;
     padding: 2px 6px;

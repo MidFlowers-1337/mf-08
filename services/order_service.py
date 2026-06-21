@@ -2,6 +2,8 @@ from typing import List, Dict, Tuple
 import time
 import random
 
+from services.fifo_service import FifoPicker
+
 
 class OrderService:
 
@@ -223,7 +225,8 @@ class OrderService:
     @staticmethod
     def cancel_order(conn, order_id: int) -> Tuple[bool, str]:
         """
-        取消订单（仅待发货状态可取消）
+        取消订单（待发货/已拣货状态可取消）
+        已拣货状态会自动回滚库存
         """
         cursor = conn.cursor()
         cursor.execute("SELECT status FROM orders WHERE id = ?", (order_id,))
@@ -232,8 +235,13 @@ class OrderService:
         if not order:
             return False, "订单不存在"
 
-        if order['status'] != 'pending':
-            return False, f"订单状态 {order['status']} 不允许取消"
+        if order['status'] == 'picked':
+            success, msg = FifoPicker.cancel_pick_order(conn, order_id)
+            if not success:
+                return False, f"取消拣货失败：{msg}"
+
+        elif order['status'] != 'pending':
+            return False, f"订单状态 {order['status']} 不允许取消，仅待发货/已拣货可取消"
 
         cursor.execute("""
             UPDATE orders 

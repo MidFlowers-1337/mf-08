@@ -18,9 +18,10 @@ class ReturnInspectionResult:
 class ReturnService:
 
     @staticmethod
-    def register_return(conn, order_id: int, reason: str = "") -> Tuple[bool, str, Dict]:
+    def register_return(conn, order_id: int, reason: str = "", items: List[Dict] = None) -> Tuple[bool, str, Dict]:
         """
-        登记客户退货申请
+        登记客户退货申请，支持部分退货
+        items: [{order_item_id: int, quantity: int}]，为空时退整单
         """
         cursor = conn.cursor()
 
@@ -46,35 +47,86 @@ class ReturnService:
         if existing:
             return False, "该订单已有退货处理中", {}
 
+        cursor.execute("""
+            SELECT id, book_id, quantity, unit_price_fen
+            FROM order_items WHERE order_id = ?
+        """, (order_id,))
+        order_items = {dict(oi)['id']: dict(oi) for oi in cursor.fetchall()}
+
+        cursor.execute("""
+            SELECT ri.order_item_id, SUM(ri.expected_quantity) as returned_qty
+            FROM return_items ri
+            JOIN returns r ON ri.return_id = r.id
+            WHERE r.order_id = ? AND r.status != 'rejected'
+            GROUP BY ri.order_item_id
+        """, (order_id,))
+        already_returned = {}
+        for r in cursor.fetchall():
+            already_returned[r['order_item_id']] = r['returned_qty']
+
+        if items is None:
+            return_items_list = []
+            for oi_id, oi in order_items.items():
+                already = already_returned.get(oi_id, 0)
+                remaining = oi['quantity'] - already
+                if remaining > 0:
+                    return_items_list.append({'order_item_id': oi_id, 'quantity': remaining})
+            items = return_items_list
+
+        if not items:
+            return False, "没有可退货的商品", {}
+
+        return_items_valid = []
+        for it in items:
+            oi_id = it.get('order_item_id')
+            qty = it.get('quantity', 0)
+            if oi_id not in order_items:
+                return False, f"订单项 {oi_id} 不存在", {}
+            if qty <= 0:
+                return False, f"订单项 {oi_id} 退货数量必须大于0", {}
+            already = already_returned.get(oi_id, 0)
+            remaining = order_items[oi_id]['quantity'] - already
+            if qty > remaining:
+                return False, f"订单项 {oi_id} 最多可退 {remaining} 本（已退 {already} 本）", {}
+            return_items_valid.append({'order_item_id': oi_id, 'quantity': qty})
+
         return_no = f"RT{int(time.time())}{random.randint(1000, 9999)}"
+
+        total_refund_fen = 0
+        for it in return_items_valid:
+            oi = order_items[it['order_item_id']]
+            total_refund_fen += oi['unit_price_fen'] * it['quantity']
 
         cursor.execute("""
             INSERT INTO returns (
                 return_no, order_id, customer_id, status, 
                 reason, refund_amount_fen
-            ) VALUES (?, ?, ?, 'registered', ?, 0)
-        """, (return_no, order_id, order['customer_id'], reason))
+            ) VALUES (?, ?, ?, 'registered', ?, ?)
+        """, (return_no, order_id, order['customer_id'], reason, total_refund_fen))
         return_id = cursor.lastrowid
 
-        cursor.execute("""
-            SELECT id, book_id, quantity, unit_price_fen
-            FROM order_items WHERE order_id = ?
-        """, (order_id,))
-        order_items = [dict(row) for row in cursor.fetchall()]
-
-        for item in order_items:
+        for it in return_items_valid:
             cursor.execute("""
                 INSERT INTO return_items (
                     return_id, order_item_id, expected_quantity
                 ) VALUES (?, ?, ?)
-            """, (return_id, item['id'], item['quantity']))
+            """, (return_id, it['order_item_id'], it['quantity']))
 
-        cursor.execute("""
-            UPDATE orders SET status = 'returned', updated_at = strftime('%s','now')
-            WHERE id = ?
-        """, (order_id,))
+        all_returned = True
+        for oi_id, oi in order_items.items():
+            already = already_returned.get(oi_id, 0)
+            current_returned = sum(it['quantity'] for it in return_items_valid if it['order_item_id'] == oi_id)
+            if already + current_returned < oi['quantity']:
+                all_returned = False
+                break
 
-        return True, "退货登记成功", {'return_id': return_id, 'return_no': return_no}
+        if all_returned:
+            cursor.execute("""
+                UPDATE orders SET status = 'returned', updated_at = strftime('%s','now')
+                WHERE id = ?
+            """, (order_id,))
+
+        return True, "退货登记成功", {'return_id': return_id, 'return_no': return_no, 'refund_amount_fen': total_refund_fen}
 
     @staticmethod
     def inspect_return(conn, return_id: int, inspection_results: List[ReturnInspectionResult]) -> Tuple[bool, str]:
@@ -271,8 +323,10 @@ class ReturnService:
             WHERE id = ?
         """, (return_id,))
 
-        refund_yuan = return_data['refund_amount_fen'] / 100
-        return True, f"退款完成，金额 {refund_yuan:.2f} 元"
+        refund_yuan = return_data['refund_amount_fen'] // 100
+        refund_jiao = (return_data['refund_amount_fen'] % 100) // 10
+        refund_fen = return_data['refund_amount_fen'] % 10
+        return True, f"退款完成，金额 {refund_yuan}.{refund_jiao}{refund_fen} 元"
 
     @staticmethod
     def get_return_list(conn, status: str = None) -> List[Dict]:
